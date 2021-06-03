@@ -83,6 +83,7 @@ const MenshenEncoding = {
     if (m && m.length > 1) {
       return {cert: MenshenEncoding.base64Decode(m[2]), privkey: m[1] === 'PRIVATE'}
     }
+    return false
   },
 
   writePEM: (c, p = false) => {
@@ -193,15 +194,15 @@ MenshenKeyStore.prototype.getAuth = function () {
   })
 }
 
-MenshenKeyStore.prototype.importPrivateKey = function (PEMKey, clientId, nickName, hash, opts = {}) {
+MenshenKeyStore.prototype.importPrivateKey = function (INKey, clientId, nickName, hash, opts = {}) {
   return new Promise((resolve, reject) => {
-    const key = MenshenEncoding.readPEM(PEMKey)
-    if (!key) { reject(new Error('Cannot read PEM private key')); return }
-    if (!key.privkey) { reject(new Error('Key is not private')); return }
+    const key = MenshenEncoding.readPEM(INKey)
 
+    if (key && !key.privkey) { reject(new Error('Key is not private')); return }
+    
     crypto.subtle.importKey(
       'pkcs8',
-      key.cert,
+      key?.cert || INKey, // either we have a PEM encoded or we have something we can try to pass
       { name: 'RSA-PSS', hash: { name: hash } },
       false,
       ['sign']
