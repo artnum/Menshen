@@ -169,7 +169,7 @@ MenshenKeyStore.prototype.init = function () {
   return this._init
 }
 
-Menshen.prototype.clear = function () {
+MenshenKeyStore.prototype.clear = function () {
   this.pkeyPin = null
 }
 
