@@ -370,6 +370,24 @@ namespace Menshen {
       if (!$res) { return false; }
       $entry = @ldap_first_entry($this->conn, $res);
       if (!$entry) { return false; }
+      return $this->parse_entry($entry);
+    }
+
+    function getUserByDbId ($dbId) {
+      $res = @ldap_read(
+        $this->conn,
+        $dbId,
+        '(objectclass=*)',
+        [ 'sn', 'mail', 'uid', 'x500uniqueIdentifier', 'cn', 'userCertificate', 'userSMIMECertificate', 'userPKCS12', 'displayName' ],
+        0
+      );
+      if (!$res) { return false; }
+      $entry = @ldap_first_entry($this->conn, $res);
+      if (!$entry) { return false; }
+      return $this->parse_entry($entry);
+    }
+
+    function parse_entry($entry) {
       $person = [
         'certificate' => null,
         'displayname' => null,

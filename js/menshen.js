@@ -144,6 +144,7 @@ const MenshenRSAUtils = {
 
 function MenshenKeyStore () {
   this.IDB = null
+  this.pkeyPin = null
 }
 
 MenshenKeyStore.prototype.init = function () {
@@ -155,7 +156,7 @@ MenshenKeyStore.prototype.init = function () {
             idb.onsuccess = (event) => {
               resolve(idb)
             }
-            idb.createObjectStore('keystore', {keyPath: 'k'})
+            idb.createObjectStore('keystore', {keyPath: 'cid'})
           } else {
             resolve(idb)
           }
@@ -166,6 +167,10 @@ MenshenKeyStore.prototype.init = function () {
       }
   })
   return this._init
+}
+
+Menshen.prototype.clear = function () {
+  this.pkeyPin = null
 }
 
 MenshenKeyStore.prototype.eraseAuth = function (nick) {
@@ -181,19 +186,6 @@ MenshenKeyStore.prototype.eraseAuth = function (nick) {
   })
 }
 
-MenshenKeyStore.prototype.getAuth = function () {
-  return new Promise((resolve, reject) => {
-    this.init()
-    .then(idb => {
-      const transaction = idb.transaction('keystore', 'readonly')
-      const request = transaction.objectStore('keystore').get('current')
-      request.onsuccess = event => resolve(event.target.result)
-      request.onerror = event => reject(event.target.error)
-      transaction.onabort = event => resolve()
-    })
-  })
-}
-
 MenshenKeyStore.prototype.importPrivateKey = function (INKey, clientId, nickName, hash, opts = {}) {
   return new Promise((resolve, reject) => {
     const key = MenshenEncoding.readPEM(INKey)
@@ -204,7 +196,7 @@ MenshenKeyStore.prototype.importPrivateKey = function (INKey, clientId, nickName
       'pkcs8',
       key?.cert || INKey, // either we have a PEM encoded or we have something we can try to pass
       { name: 'RSA-PSS', hash: { name: hash } },
-      false,
+      true,
       ['sign']
     )
     .then((k) => {
@@ -219,6 +211,196 @@ MenshenKeyStore.prototype.importPrivateKey = function (INKey, clientId, nickName
   })
 }
 
+MenshenKeyStore.prototype.keyFromPass = function (password, s = null) {
+  const salt = s || crypto.getRandomValues(new Uint8Array(16))
+  const pbkdf2p = {
+    name: 'PBKDF2',
+    hash: 'SHA-256',
+    salt,
+    iterations: 5000
+  }
+  return new Promise((resolve, reject) => {
+    crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(password),
+      {name: 'PBKDF2'},
+      false,
+      ['deriveBits', 'deriveKey']
+    ).then(key => {
+      return crypto.subtle.deriveKey(
+        pbkdf2p,
+        key,
+        {name: 'AES-GCM', length: 256},
+        true,
+        ['encrypt', 'decrypt']
+      )
+    })
+    .then(derivedKey => {
+      resolve({key: derivedKey, salt})
+    })
+    .catch(reason => {
+      reason instanceof Error ? reject(reason) : reject(new Error(reason))
+    })
+  })
+}
+
+MenshenKeyStore.prototype.cryptPrivateKey = function (pkey) {
+  const iv = crypto.getRandomValues(new Uint8Array(16))
+  return new Promise((resolve, reject) => {
+    crypto.subtle.exportKey('pkcs8', pkey)
+    .then(exported => {
+      return crypto.subtle.encrypt(
+        {
+          name: 'AES-GCM',
+          iv
+        },
+        this.pkeyPin.key,
+        exported
+      )
+    })
+    .then(encrypted => {
+      resolve(
+        {
+          crypted: true,
+          type: 'pkcs8',
+          key: encrypted,
+          iv: iv,
+          pSalt: this.pkeyPin.salt
+        }
+      )
+    })
+    .catch(reason => {
+      reason instanceof Error ? reject(reason) : reject(new Error(reason))
+    })
+  })
+}
+
+MenshenKeyStore.prototype.decryptPrivateKey = function (storableKey) {
+  return new Promise((resolve, reject) => {
+    crypto.subtle.decrypt(
+      {
+        name: 'AES-GCM',
+        iv: storableKey.iv
+      },
+      this.pkeyPin.key,
+      storableKey.key
+    )
+    .then(pkey => {
+      resolve(pkey)
+    })
+    .catch(reason => {
+      reason instanceof Error ? reject(reason) : reject(new Error(reason))
+    })
+  })
+}
+
+MenshenKeyStore.prototype.setPKeyPin = function (pin, salt = null) {
+  return new Promise((resolve, reject) => {
+    this.keyFromPass(pin, salt)
+    .then(key => {
+      this.pkeyPin = key
+      resolve(true)
+    })
+  })
+  .catch(reason => {
+    reason instanceof Error ? reject(reason) : reject(new Error(reason))
+  })
+}
+
+MenshenKeyStore.prototype.exportPKeyPin = function () {
+  return new Promise((resolve, reject) => {
+    crypto.subtle.exportKey('jwk', this.pkeyPin.key)
+    .then(exportedKey => {
+      resolve(exportedKey)
+    })
+  })
+}
+
+MenshenKeyStore.prototype.importPKeyPin = function (username, key) {
+  return new Promise((resolve, reject) => {
+    if (typeof key === 'object') {
+      crypto.subtle.importKey(
+        'jwk',
+        key,
+        {name: 'AES-GCM', length: 256},
+        true,
+        ['encrypt', 'decrypt']
+      )
+      .then(pkeyPin => {
+        /* no need for salt, this is the derived key */
+        this.pkeyPin = {key: pkeyPin}
+        resolve()
+      })
+      return
+    }
+    this.hasAuth(username)
+    .then(auth => {
+      return auth.pkey.pSalt
+    })
+    .then(salt => {
+      return this.keyFromPass(key, salt)
+    })
+    .then(key => {
+      this.pkeyPin = key
+      resolve()
+    })
+  })
+}
+
+MenshenKeyStore.prototype.hasAuth = function (cid) {
+  return new Promise((resolve, reject) => {
+    this.init()
+    .then(idb => {
+      const transaction = idb.transaction('keystore', 'readonly')
+      const request = transaction.objectStore('keystore').get(cid)
+      request.onerror = event => reject(event.target.error)
+      transaction.onabort = () => resolve(false)
+      request.onsuccess = (event) => {
+        const auth = event.target.result
+        if (auth && auth.pkey) { resolve(auth) }
+        else { resolve(false) }
+      }
+    })
+  })
+}
+
+MenshenKeyStore.prototype.getAuth = function (cid) {
+  return new Promise((resolve, reject) => {
+    this.init()
+    .then(idb => {
+      const transaction = idb.transaction('keystore', 'readonly')
+      const request = transaction.objectStore('keystore').get(cid)
+      request.onerror = event => reject(event.target.error)
+      transaction.onabort = () => resolve(false)
+      request.onsuccess = (event) => {
+        const auth = event.target.result
+        if (!auth) {
+          resolve(null)
+          return
+        }
+        if (!auth.pkey) {
+          resolve(null)
+          return
+        }
+        if (!auth.pkey.crypted) {
+          auth.pkey = auth.pkey.key
+          resolve(auth)
+          return;
+        }
+
+        this.decryptPrivateKey(auth.pkey)
+        .then(pkey => {
+          auth.pkey = pkey
+          resolve(auth)
+        })
+        .catch(reason => {
+          reason instanceof Error ? reject(reason) : reject(new Error(reason))
+        })
+      }
+    })
+  })
+}
+
 MenshenKeyStore.prototype.storeAuth = function (nick, cid, pkey, opts = {}) {
   return new Promise((resolve, reject) => {
       if (!pkey instanceof CryptoKey) {
@@ -227,18 +409,38 @@ MenshenKeyStore.prototype.storeAuth = function (nick, cid, pkey, opts = {}) {
       }
     this.init()
     .then(idb => {
-      const transaction = idb.transaction('keystore', 'readwrite')
+      new Promise((resolve, reject) => {
+        if (!this.pkeyPin) {
+          resolve(
+            {
+              crypted: false,
+              type: 'crypto',
+              key: pkey
+            }
+          )
+          return
+        }
+        this.cryptPrivateKey(pkey)
+        .then(key => {
+          resolve(key)
+        })
+      })
+      .then(storablePkey => {
+        const transaction = idb.transaction('keystore', 'readwrite')
 
-      transaction.onerror = event => reject(new Error(event.message))
-      transaction.onabort = event => resolve()
-      transaction.oncomplete = event => { resolve() }
-
-      transaction.objectStore('keystore').put({
-          k: 'current',
-          nick: nick,
-          cid: cid,
-          pkey: pkey,
-          opts: opts
+        transaction.onerror = event => reject(new Error(event.message))
+        transaction.onabort = () => resolve(false)
+        transaction.oncomplete = () => resolve(true)
+  
+        transaction.objectStore('keystore').put({
+            nick: nick,
+            cid: cid,
+            pkey: storablePkey,
+            opts: opts
+        })
+      })
+      .catch(reason => {
+        reason instanceof Error ? reject(reason) : reject(new Error(reason))
       })
     })
   })
@@ -272,6 +474,11 @@ function Menshen (options = {}, _fetch = null) {
   if (options.salt) {
     this.setSaltLength(options.salt)
   }
+}
+
+Menshen.prototype.clear = function () {
+  this.key = null
+  this.kloaded = false
 }
 
 Menshen.prototype.isLoaded = function () {
@@ -329,10 +536,34 @@ Menshen.prototype.getClientId = function () {
 }
 
 Menshen.prototype.setPrivateKey = function (key) {
-  if (!key instanceof CryptoKey) { return }
-  if (key.type !== 'private') { return }
-  this.key.priv = key
-  this.kloaded = true
+  return new Promise((resolve, reject) => {
+    if (!key) { reject(new Error('Pas de clé')); return }
+    if (!key instanceof CryptoKey) { reject(new Error('Pas une clé cryptographique')); return }
+    if (key.type !== 'private') { reject(new Error('Pas une clé privée')); return }
+    this.key.priv = key
+    this.kloaded = true
+    resolve()
+  })
+}
+
+Menshen.prototype.setPkcs8PrivateKey = function (pkcs8) {
+  return new Promise((resolve, reject) => {
+    crypto.subtle.importKey(
+      'pkcs8',
+      pkcs8,
+      { name: 'RSA-PSS', hash: { name: this.hash } },
+      false,
+      ['sign']
+    )
+    .then(privKey => {
+      this.key.priv = privKey
+      this.kloaded = true
+      resolve()
+    })
+    .catch(reason => {
+      reason instanceof Error ? reject(reason) : reject(new Error(reason))
+    })
+  })
 }
 
 Menshen.prototype.setPublicKey = function (key) {
