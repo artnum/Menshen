@@ -216,7 +216,14 @@ namespace Menshen {
     public function getUser($clientId);
   }
 
-  class GenericUser {
+  interface User {
+    public function getUid();
+    public function getDbId();
+    public function getDisplayName();
+    public function toJson();
+  }
+
+  class GenericUser implements User {
     private $displayName = null;
     private $dbId = null;
     private $uid = null;
@@ -358,7 +365,7 @@ namespace Menshen {
     function endCheck($clientId, $success) { return true; }
     function getUser($clientId) {
       $fclientId = ldap_escape($clientId, '', LDAP_ESCAPE_FILTER);
-      $filter = sprintf('(|(uid=%s)(x500uniqueIdentifier=%s)(cn=%s)(mail=%s)(sn=%s))', $fclientId, $fclientId, $fclientId, $fclientId, $fclientId);
+      $filter = sprintf('(&(|(uid=%s)(x500uniqueIdentifier=%s)(cn=%s)(mail=%s)(sn=%s))(|(usersmimecertificate=*)(userpkcs12=*)))', $fclientId, $fclientId, $fclientId, $fclientId, $fclientId);
       $res = @ldap_search(
         $this->conn,
         $this->base,
@@ -377,7 +384,7 @@ namespace Menshen {
       $res = @ldap_read(
         $this->conn,
         $dbId,
-        '(objectclass=*)',
+        '(|(usersmimecertificate=*)(userpkcs12=*))',
         [ 'sn', 'mail', 'uid', 'x500uniqueIdentifier', 'cn', 'userCertificate', 'userSMIMECertificate', 'userPKCS12', 'displayName' ],
         0
       );

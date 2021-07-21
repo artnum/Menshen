@@ -720,6 +720,7 @@ Menshen.prototype.qstring = function (url, method, requestId) {
       }
       resolve(url)
     })
+    .catch(reason => { reject(reason) })
   })
 }
 
