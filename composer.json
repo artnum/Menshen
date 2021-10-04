@@ -1,0 +1,20 @@
+{
+    "name": "artnum/menshen",
+    "description": "Authentication",
+    "license": "MIT",
+    "keywords": ["authentication"],
+    "authors": [{
+        "name": "Etienne Bagnoud",
+        "email": "etienne@artnum.ch",
+        "homepage": "https://artnum.ch",
+        "role": "Developper"
+    }],
+    "autoload": {
+        "psr-4": {
+            "": "php/"
+        }
+    },
+    "require": {
+        "phpseclib/phpseclib": "2.*"
+    }
+}
